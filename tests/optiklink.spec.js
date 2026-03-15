@@ -17,7 +17,7 @@ function nowStr() {
     }).replace(/\//g, '-');
 }
 
-function sendTG(result) {
+function sendTG(result, serverName = 'OptikLink') {
     return new Promise((resolve) => {
         if (!TG_CHAT_ID || !TG_TOKEN) {
             console.log('⚠️ TG_BOT 未配置，跳过推送');
@@ -27,7 +27,7 @@ function sendTG(result) {
         const msg = [
             `🎮 OptikLink 保活通知`,
             `🕐 运行时间: ${nowStr()}`,
-            `🖥 服务器: 🇸🇬 OptikLink-SG`,
+            `🖥 服务器: ${serverName}`,
             `📊 执行结果: ${result}`,
         ].join('\n');
 
@@ -64,61 +64,52 @@ function sendTG(result) {
 
 async function handleOAuthPage(page) {
     console.log(`  📄 当前 URL: ${page.url()}`);
-    await page.waitForTimeout(5000);
+    await page.waitForTimeout(2000);
 
-    const selectors = [
-        'button:has-text("Authorize")',
-        'button:has-text("授权")',
-        'div[class*="footer"] button',
-        'button[class*="primary"]',
-        'button[type="submit"]',
-    ];
+    for (let i = 0; i < 5; i++) {
+        try {
+            const btn = await page.waitForSelector('button.primary_a22cb0', { timeout: 8000 });
+            const text = (await btn.innerText()).trim();
+            console.log(`  🔘 当前按钮: "${text}"`);
 
-    for (let i = 0; i < 8; i++) {
-        console.log(`  🔄 第 ${i + 1} 次尝试，URL: ${page.url()}`);
-
-        if (!page.url().includes('discord.com')) {
-            console.log('  ✅ 已离开 Discord');
-            return;
-        }
-
-        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-        await page.waitForTimeout(1000);
-
-        for (const selector of selectors) {
-            try {
-                const btn = page.locator(selector).last();
-                await btn.waitFor({ state: 'visible', timeout: 3000 });
-
-                const text = (await btn.innerText()).trim();
-                console.log(`  🔘 找到按钮: "${text}" (${selector})`);
-
-                if (
-                    text.includes('取消') ||
-                    text.toLowerCase().includes('cancel') ||
-                    text.toLowerCase().includes('deny')
-                ) continue;
-
-                const disabled = await btn.isDisabled();
-                if (disabled) {
-                    console.log('  ⏳ 按钮 disabled，等待...');
-                    await page.waitForTimeout(2000);
-                    break;
-                }
-
+            if (/scroll/i.test(text) || text.includes('滚动')) {
+                console.log('  → 滚动条款到底部...');
+                await page.evaluate(() => {
+                    const s = document.querySelector('[class*="scroller"]')
+                        || document.querySelector('[class*="scrollerBase"]')
+                        || document.querySelector('[class*="content"]');
+                    if (s) s.scrollTop = s.scrollHeight;
+                    window.scrollTo(0, document.body.scrollHeight);
+                });
+                await page.waitForTimeout(1500);
                 await btn.click();
-                console.log(`  ✅ 已点击: "${text}"`);
-                await page.waitForTimeout(3000);
+                console.log('  ✅ 已点击（滚动后）');
+                await page.waitForTimeout(1500);
 
+            } else if (/authorize/i.test(text) || text.includes('授权')) {
+                await btn.click();
+                console.log('  ✅ 已点击授权按钮');
+                await page.waitForTimeout(3000);
                 if (!page.url().includes('discord.com')) {
                     console.log('  ✅ 授权成功，已跳转');
-                    return;
                 }
-                break;
-            } catch { continue; }
-        }
+                return;
 
-        await page.waitForTimeout(3000);
+            } else {
+                const disabled = await btn.isDisabled();
+                if (!disabled) {
+                    await btn.click();
+                    console.log(`  ✅ 已点击: "${text}"`);
+                    await page.waitForTimeout(1500);
+                } else {
+                    console.log(`  ⏳ 按钮 disabled: "${text}"`);
+                    break;
+                }
+            }
+        } catch (e) {
+            console.log(`  ℹ️ 授权按钮处理结束: ${e.message}`);
+            break;
+        }
     }
 
     console.log(`  ⚠️ handleOAuthPage 结束，URL: ${page.url()}`);
@@ -334,16 +325,29 @@ test('OptikLink 保活', async () => {
         await panelPage.waitForURL(/control\.optiklink\.net\/$/, { timeout: TIMEOUT });
         console.log(`✅ 控制台登录成功！当前：${panelPage.url()}`);
 
-        console.log('🔍 查找服务器 OptikLink-SG...');
+        console.log('🔍 查找服务器...');
         await panelPage.waitForTimeout(2000);
+
+        const serverInfo = await panelPage.evaluate(() => {
+            const card = document.querySelector('a[href*="/server/"]');
+            if (!card) return null;
+            const href = card.getAttribute('href');
+            const id = href.replace('/server/', '').trim();
+            const nameEl = card.querySelector('p.sc-1ibsw91-5');
+            const name = nameEl ? nameEl.innerText.trim() : '';
+            return { id, name };
+        });
+
+        if (!serverInfo) throw new Error('❌ 未找到服务器卡片');
+        console.log(`✅ 找到服务器：${serverInfo.name} (${serverInfo.id})`);
 
         const [serverPage] = await Promise.all([
             context.waitForEvent('page'),
-            panelPage.click('p:has-text("[Paper] OptikLink-SG")'),
+            panelPage.click('a[href*="/server/"]'),
         ]);
 
         serverPage.setDefaultTimeout(TIMEOUT);
-        await serverPage.waitForURL(/control\.optiklink\.net\/server\/28386fc6/, { timeout: TIMEOUT });
+        await serverPage.waitForURL(new RegExp(`control\\.optiklink\\.net/server/${serverInfo.id}`), { timeout: TIMEOUT });
         console.log(`✅ 已到达服务器页面：${serverPage.url()}`);
 
         console.log('🔍 检查服务器状态...');
@@ -354,7 +358,7 @@ test('OptikLink 保活', async () => {
 
         if (statusText.toLowerCase().includes('running')) {
             console.log('🎉 保活成功！');
-            await sendTG('✅ 保活成功！\n服务器状态：🚀 Running');
+            await sendTG('✅ 保活成功！\n服务器状态：🚀 Running', serverInfo.name);
         } else if (statusText.toLowerCase().includes('offline')) {
             console.log('⚠️ 服务器离线，尝试启动...');
             await serverPage.click('button:has-text("Start")');
@@ -373,14 +377,14 @@ test('OptikLink 保活', async () => {
 
             if (started) {
                 console.log('✅ 服务器已成功启动！');
-                await sendTG('🔄 Start 启动！\n服务器状态：🚀 Running');
+                await sendTG('🔄 Start 启动！\n服务器状态：🚀 Running', serverInfo.name);
             } else {
                 console.log('❌ 等待超时，服务器未能启动');
-                await sendTG('❌ Start 启动失败，等待超时\n服务器状态：Offline');
+                await sendTG('❌ Start 启动失败，等待超时\n服务器状态：Offline', serverInfo.name);
             }
         } else {
             console.log(`⚠️ 未知状态：${statusText.trim()}`);
-            await sendTG(`⚠️ 状态未知\n服务器状态：${statusText.trim()}`);
+            await sendTG(`⚠️ 状态未知\n服务器状态：${statusText.trim()}`, serverInfo.name);
         }
 
     } catch (e) {
