@@ -63,7 +63,7 @@ function sendTG(result, serverName = 'OptikLink') {
 }
 
 async function handleOAuthPage(page) {
-    console.log(`  📄 当前 URL: ${page.url()}`);
+    console.log(`  📄 当前在 Discord 授权页面`);
     await page.waitForTimeout(2000);
 
     for (let i = 0; i < 5; i++) {
@@ -106,12 +106,12 @@ async function handleOAuthPage(page) {
                 }
             }
         } catch {
-            console.log('  ℹ️ 未找到授权按钮，等待自动跳转...');
+            console.log('  ✨ 已授权，等待自动跳转...');
             try {
                 await page.waitForURL(url => !url.includes('discord.com'), { timeout: 10000 });
-                console.log('  ✅ 已自动跳转');
+                console.log('  ✅ 跳转成功');
             } catch {
-                console.log('  ⚠️ 等待跳转超时，继续重试...');
+                console.log('  ⏳ 跳转中，稍候...');
             }
             return;
         }
@@ -308,24 +308,26 @@ test('OptikLink 保活', async () => {
         await page.waitForTimeout(2000);
 
         console.log('📤 点击 Panel Login...');
-        await page.click('a[href="https://control.optiklink.net/auth/login"]');
+        const [panelPage] = await Promise.all([
+            page.context().waitForEvent('page'),
+            page.click('a[href="https://control.optiklink.net/auth/login"]'),
+        ]);
 
+        panelPage.setDefaultTimeout(TIMEOUT);
         console.log('⏳ 等待跳转控制台登录页...');
-        await page.waitForURL(/control\.optiklink\.net\/auth\/login/, { timeout: TIMEOUT });
-        console.log(`✅ 已到达控制台登录页：${page.url()}`);
+        await panelPage.waitForURL(/control\.optiklink\.net\/auth\/login/, { timeout: TIMEOUT });
+        console.log(`✅ 已到达控制台登录页：${panelPage.url()}`);
 
         console.log('✏️ 填写控制台账号密码...');
-        await page.fill('input[name="username"]', panelUser);
-        await page.fill('input[name="password"]', panelPass);
+        await panelPage.fill('input[name="username"]', panelUser);
+        await panelPage.fill('input[name="password"]', panelPass);
 
         console.log('📤 提交控制台登录...');
-        await page.click('span.sc-1qu1gou-2:has-text("Login")');
+        await panelPage.click('span.sc-1qu1gou-2:has-text("Login")');
 
         console.log('⏳ 确认到达控制台首页...');
-        await page.waitForURL(/control\.optiklink\.net\/$/, { timeout: TIMEOUT });
-        console.log(`✅ 控制台登录成功！当前：${page.url()}`);
-
-        const panelPage = page;
+        await panelPage.waitForURL(/control\.optiklink\.net\/$/, { timeout: TIMEOUT });
+        console.log(`✅ 控制台登录成功！当前：${panelPage.url()}`);
 
         console.log('🔍 查找服务器...');
         await panelPage.waitForTimeout(2000);
@@ -352,6 +354,7 @@ test('OptikLink 保活', async () => {
             await handleOAuthPage(panelPage);
         }
 
+        console.log('⏳ 等待跳转服务器页面...');
         await panelPage.waitForURL(serverUrlPattern, { timeout: TIMEOUT });
         console.log(`✅ 已到达服务器页面：${panelPage.url()}`);
 
