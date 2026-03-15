@@ -3,6 +3,7 @@ const { test, chromium } = require('@playwright/test');
 const https = require('https');
 
 const [email, password] = (process.env.DISCORD_ACCOUNT || ',').split(',');
+const [panelUser, panelPass] = (process.env.PANEL_ACCOUNT || ',').split(',');
 const [TG_CHAT_ID, TG_TOKEN] = (process.env.TG_BOT || ',').split(',');
 
 const TIMEOUT = 60000;
@@ -63,14 +64,14 @@ function sendTG(result) {
 
 async function handleOAuthPage(page) {
     console.log(`  📄 当前 URL: ${page.url()}`);
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(5000);
 
     const selectors = [
         'button:has-text("Authorize")',
         'button:has-text("授权")',
-        'button[type="submit"]',
         'div[class*="footer"] button',
         'button[class*="primary"]',
+        'button[type="submit"]',
     ];
 
     for (let i = 0; i < 8; i++) {
@@ -82,13 +83,12 @@ async function handleOAuthPage(page) {
         }
 
         await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-        await page.waitForTimeout(500);
+        await page.waitForTimeout(1000);
 
         for (const selector of selectors) {
             try {
                 const btn = page.locator(selector).last();
-                const visible = await btn.isVisible();
-                if (!visible) continue;
+                await btn.waitFor({ state: 'visible', timeout: 3000 });
 
                 const text = (await btn.innerText()).trim();
                 console.log(`  🔘 找到按钮: "${text}" (${selector})`);
@@ -102,12 +102,13 @@ async function handleOAuthPage(page) {
                 const disabled = await btn.isDisabled();
                 if (disabled) {
                     console.log('  ⏳ 按钮 disabled，等待...');
+                    await page.waitForTimeout(2000);
                     break;
                 }
 
                 await btn.click();
                 console.log(`  ✅ 已点击: "${text}"`);
-                await page.waitForTimeout(2000);
+                await page.waitForTimeout(3000);
 
                 if (!page.url().includes('discord.com')) {
                     console.log('  ✅ 授权成功，已跳转');
@@ -117,7 +118,7 @@ async function handleOAuthPage(page) {
             } catch { continue; }
         }
 
-        await page.waitForTimeout(2000);
+        await page.waitForTimeout(3000);
     }
 
     console.log(`  ⚠️ handleOAuthPage 结束，URL: ${page.url()}`);
@@ -158,10 +159,13 @@ test('OptikLink 保活', async () => {
         headless: true,
         proxy: proxyConfig,
     });
-    const page = await browser.newPage();
+    const context = await browser.newContext();
+    const page = await context.newPage();
     page.setDefaultTimeout(TIMEOUT);
 
-    await page.addInitScript(() => {
+    await context.addInitScript(() => {
+        if (!location.hostname.includes('optiklink.net')) return;
+
         const AD_DOMAINS = [
             'tzegilo.com', 'alwingulla.com', 'auqot.com', 'jmosl.com', '094kk.com',
             'optiklink.com', 'tmll7.com', 'oundhertobeconsist.org',
@@ -309,35 +313,43 @@ test('OptikLink 保活', async () => {
         await page.waitForTimeout(2000);
 
         console.log('📤 点击 Panel Login...');
-        await page.click('a[href="https://control.optiklink.net/auth/login"]');
+        const [panelPage] = await Promise.all([
+            context.waitForEvent('page'),
+            page.click('a[href="https://control.optiklink.net/auth/login"]'),
+        ]);
 
+        panelPage.setDefaultTimeout(TIMEOUT);
         console.log('⏳ 等待跳转控制台登录页...');
-        await page.waitForURL(/control\.optiklink\.net\/auth\/login/, { timeout: TIMEOUT });
-        console.log(`✅ 已到达控制台登录页：${page.url()}`);
+        await panelPage.waitForURL(/control\.optiklink\.net\/auth\/login/, { timeout: TIMEOUT });
+        console.log(`✅ 已到达控制台登录页：${panelPage.url()}`);
 
         console.log('✏️ 填写控制台账号密码...');
-        await page.fill('input[name="username"]', 'yrbubxyd');
-        await page.fill('input[name="password"]', 'MG8IPCkiAM2');
+        await panelPage.fill('input[name="username"]', panelUser);
+        await panelPage.fill('input[name="password"]', panelPass);
 
         console.log('📤 提交控制台登录...');
-        await page.click('span.sc-1qu1gou-2:has-text("Login")');
+        await panelPage.click('span.sc-1qu1gou-2:has-text("Login")');
 
         console.log('⏳ 确认到达控制台首页...');
-        await page.waitForURL(/control\.optiklink\.net\/$/, { timeout: TIMEOUT });
-        console.log(`✅ 控制台登录成功！当前：${page.url()}`);
+        await panelPage.waitForURL(/control\.optiklink\.net\/$/, { timeout: TIMEOUT });
+        console.log(`✅ 控制台登录成功！当前：${panelPage.url()}`);
 
         console.log('🔍 查找服务器 OptikLink-SG...');
-        await page.waitForTimeout(2000);
-        await page.click('p:has-text("[Paper] OptikLink-SG")');
+        await panelPage.waitForTimeout(2000);
 
-        console.log('⏳ 等待跳转服务器页面...');
-        await page.waitForURL(/control\.optiklink\.net\/server\/28386fc6/, { timeout: TIMEOUT });
-        console.log(`✅ 已到达服务器页面：${page.url()}`);
+        const [serverPage] = await Promise.all([
+            context.waitForEvent('page'),
+            panelPage.click('p:has-text("[Paper] OptikLink-SG")'),
+        ]);
+
+        serverPage.setDefaultTimeout(TIMEOUT);
+        await serverPage.waitForURL(/control\.optiklink\.net\/server\/28386fc6/, { timeout: TIMEOUT });
+        console.log(`✅ 已到达服务器页面：${serverPage.url()}`);
 
         console.log('🔍 检查服务器状态...');
-        await page.waitForTimeout(3000);
+        await serverPage.waitForTimeout(3000);
 
-        const statusText = await page.locator('p.sc-168cvuh-1').innerText().catch(() => '');
+        const statusText = await serverPage.locator('p.sc-168cvuh-1').innerText().catch(() => '');
         console.log(`📊 服务器状态：${statusText.trim()}`);
 
         if (statusText.toLowerCase().includes('running')) {
@@ -345,13 +357,13 @@ test('OptikLink 保活', async () => {
             await sendTG('✅ 保活成功！\n服务器状态：🚀 Running');
         } else if (statusText.toLowerCase().includes('offline')) {
             console.log('⚠️ 服务器离线，尝试启动...');
-            await page.click('button:has-text("Start")');
+            await serverPage.click('button:has-text("Start")');
             console.log('📤 已点击 Start，持续监控状态...');
 
             let started = false;
             for (let i = 0; i < 24; i++) {
-                await page.waitForTimeout(5000);
-                const s = await page.locator('p.sc-168cvuh-1').innerText().catch(() => '');
+                await serverPage.waitForTimeout(5000);
+                const s = await serverPage.locator('p.sc-168cvuh-1').innerText().catch(() => '');
                 console.log(`  🔄 第 ${i + 1} 次检查，状态：${s.trim()}`);
                 if (s.toLowerCase().includes('running')) {
                     started = true;
