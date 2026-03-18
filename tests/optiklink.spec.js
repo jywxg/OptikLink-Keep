@@ -62,12 +62,35 @@ function sendTG(result, serverName = 'OptikLink') {
     });
 }
 
+// 处理 Discord 登录页（填账密）
+async function handleDiscordLogin(page, email, password) {
+    console.log('  ✏️ 填写 Discord 账号密码...');
+    await page.fill('input[name="email"]', email);
+    await page.fill('input[name="password"]', password);
+
+    console.log('  📤 提交 Discord 登录...');
+    await page.click('button[type="submit"]');
+
+    console.log('  ⏳ 等待离开 Discord 登录页...');
+    try {
+        await page.waitForURL(url => !url.toString().includes('discord.com/login'), { timeout: 15000 });
+        console.log(`  ✅ 已离开登录页，当前：${page.url()}`);
+    } catch {
+        let err = '账密错误或触发了 2FA / 验证码';
+        try { err = await page.locator('[class*="errorMessage"]').first().innerText(); } catch {}
+        throw new Error(`❌ Discord 登录失败: ${err}`);
+    }
+}
+
+// 处理 Discord OAuth 授权页（点击 Authorize）
 async function handleOAuthPage(page) {
-    console.log(`  📄 当前在 Discord 授权页面`);
+    console.log(`  📄 当前在 Discord OAuth 授权页面`);
     await page.waitForTimeout(2000);
 
     for (let i = 0; i < 5; i++) {
-        if (!page.url().includes('discord.com')) {
+        const currentUrl = page.url();
+
+        if (!currentUrl.includes('discord.com')) {
             console.log('  ✅ 已离开 Discord');
             return;
         }
@@ -96,19 +119,15 @@ async function handleOAuthPage(page) {
                 await page.waitForTimeout(3000);
                 return;
             } else {
+                // 其他按钮（包括 disabled 状态）不点击，等待页面自动处理
                 const disabled = await btn.isDisabled();
-                if (!disabled) {
-                    await btn.click();
-                    console.log(`  ✅ 已点击: "${text}"`);
-                    await page.waitForTimeout(1500);
-                } else {
-                    console.log(`  ⏳ 按钮 disabled: "${text}"`);
-                }
+                console.log(`  ⏳ 按钮 "${text}" disabled=${disabled}，等待...`);
+                await page.waitForTimeout(1500);
             }
         } catch {
-            console.log('  ✨ 已授权，等待自动跳转...');
+            console.log('  ✨ 按钮未找到，等待自动跳转...');
             try {
-                await page.waitForURL(url => !url.includes('discord.com'), { timeout: 10000 });
+                await page.waitForURL(url => !url.toString().includes('discord.com'), { timeout: 10000 });
                 console.log('  ✅ 跳转成功');
             } catch {
                 console.log('  ⏳ 跳转中，稍候...');
@@ -258,9 +277,11 @@ test('OptikLink 保活', async ({ }, testInfo) => {
         console.log('📤 点击 Login with Discord...');
         await page.click("a[href='login']");
 
-        // ✅ 修复核心：先等待离开 /auth，再判断实际落地 URL
-        // 情况A：Discord session 过期 → 跳到 discord.com/login，需填账密
-        // 情况B：Discord session 有效 → 直接跳到 optiklink.net 或 oauth2/authorize，无需填账密
+        // 等待离开 /auth 页，判断实际落地位置
+        // 三种情况：
+        //   A. discord.com/login       → 没有 Discord 登录态，需填账密
+        //   B. discord.com/oauth2/...  → 有登录态但需要点授权（或按钮是 Log In 说明又被踢回登录）
+        //   C. optiklink.net           → 全程静默完成，直接成功
         console.log('⏳ 等待跳转目标页面...');
         await page.waitForURL(url => !url.toString().includes('optiklink.com/auth'), { timeout: TIMEOUT });
 
@@ -268,48 +289,49 @@ test('OptikLink 保活', async ({ }, testInfo) => {
         console.log(`📍 落地页：${landedUrl}`);
 
         if (landedUrl.includes('discord.com/login')) {
-            // 情况A：需要重新登录 Discord
-            console.log('🔑 Discord session 已过期，填写账号密码...');
-            await page.fill('input[name="email"]', email);
-            await page.fill('input[name="password"]', password);
-
-            console.log('📤 提交登录请求...');
-            await page.click('button[type="submit"]');
-
-            console.log('⏳ 等待离开 Discord 登录页...');
-            try {
-                await page.waitForURL(url => !url.includes('discord.com/login'), { timeout: 15000 });
-            } catch {
-                // 超时仍在登录页，才是真正的账密错误或 2FA
-                let err = '账密错误或触发了 2FA / 验证码';
-                try { err = await page.locator('[class*="errorMessage"]').first().innerText(); } catch {}
-                await sendTG(`❌ Discord 登录失败：${err}`);
-                throw new Error(`❌ Discord 登录失败: ${err}`);
-            }
-        } else {
-            // 情况B：session 有效，静默授权，无需登录
-            console.log('✅ Discord session 有效，已静默授权，无需重新登录');
-        }
-
-        // 处理可能出现的 OAuth 授权页
-        console.log('⏳ 检查是否有 OAuth 授权页...');
-        try {
-            await page.waitForURL(/discord\.com\/oauth2\/authorize/, { timeout: 6000 });
-            console.log('🔍 进入 OAuth 授权页，处理中...');
+            // 情况A：直接落到登录页，填账密
+            console.log('🔑 Discord 未登录，进入登录流程...');
+            await handleDiscordLogin(page, email, password);
+        } else if (landedUrl.includes('discord.com/oauth2')) {
+            // 情况B：落到 OAuth 授权页，处理授权
+            // 注意：OAuth 页上如果按钮是 "Log In" 说明登录态已失效，需要先登录
+            console.log('🔍 落地 OAuth 授权页，检查登录状态...');
             await page.waitForTimeout(2000);
 
-            if (page.url().includes('discord.com')) {
-                await handleOAuthPage(page);
-            } else {
-                console.log('✅ 已自动完成授权，无需手动点击');
-            }
+            // 检查按钮文字来判断是否需要先登录
+            try {
+                const btn = await page.waitForSelector('button.primary_a22cb0', { timeout: 5000 });
+                const btnText = (await btn.innerText()).trim();
+                console.log(`  🔘 OAuth 页按钮："${btnText}"`);
 
-            await page.waitForURL(/optiklink\.net/, { timeout: 15000 });
-            console.log(`✅ 已离开 Discord，当前：${page.url()}`);
-        } catch {
-            console.log(`✅ 无 OAuth 授权页或已跳转，当前：${page.url()}`);
+                if (/log\s*in/i.test(btnText) || btnText.includes('登录')) {
+                    // 按钮是 Log In，说明没有登录态，点击后会跳转到登录页
+                    console.log('  🔑 OAuth 页需要先登录，跳转 Discord 登录页...');
+                    await btn.click();
+                    await page.waitForURL(/discord\.com\/login/, { timeout: 10000 });
+                    await handleDiscordLogin(page, email, password);
+                } else {
+                    // 按钮是 Authorize 或其他，走正常 OAuth 流程
+                    await handleOAuthPage(page);
+                }
+            } catch {
+                // 找不到按钮，可能已自动跳转
+                console.log('  ✨ OAuth 页无需操作，已自动跳转');
+            }
+        } else if (landedUrl.includes('optiklink.net')) {
+            // 情况C：直接到达 OptikLink，全程静默完成
+            console.log('✅ Discord session 完全有效，已静默完成授权');
+        } else {
+            console.log(`⚠️ 未知落地页：${landedUrl}，尝试继续...`);
         }
 
+        // 处理登录/授权后可能还停在 Discord 的情况（如 OAuth 授权页还未跳走）
+        if (page.url().includes('discord.com/oauth2')) {
+            console.log('🔍 仍在 OAuth 授权页，继续处理...');
+            await handleOAuthPage(page);
+        }
+
+        // 等待最终到达 OptikLink
         console.log('⏳ 确认到达 OptikLink...');
         try {
             await page.waitForURL(/optiklink\.net/, { timeout: 30000 });
